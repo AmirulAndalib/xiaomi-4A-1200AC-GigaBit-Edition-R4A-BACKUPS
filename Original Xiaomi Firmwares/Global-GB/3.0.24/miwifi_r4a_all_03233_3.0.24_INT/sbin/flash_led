@@ -1,0 +1,30 @@
+#!/bin/sh
+
+usage() {
+	echo "flash_led 1/2/3"
+	echo "[1] = 6; // red"
+	echo "[2] = 10; // yellow"
+	echo "[3] = 8; // blue"
+}
+
+
+case $1 in
+	1)
+		gpio l 6 10 10 1 0 4000
+		gpio l 10 0 4000 0 0 0
+		gpio l 8 0 4000 0 0 0
+		;;
+	2)
+		gpio l 6 0 4000 0 0 0
+		gpio l 10 10 10 1 0 4000
+		gpio l 8 0 4000 0 0 0
+		;;
+	3)
+		gpio l 6 0 4000 0 0 0
+		gpio l 10 0 4000 0 0 0
+		gpio l 8 10 10 1 0 4000
+		;;
+	*)
+		usage
+		;;
+esac

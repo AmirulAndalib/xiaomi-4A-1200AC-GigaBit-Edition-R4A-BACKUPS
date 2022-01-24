@@ -1,0 +1,58 @@
+#!/bin/sh
+# check WAN periodly
+
+log() {
+    msg="$@"
+    [ -z "$msg" ] && return 0
+
+    DATE="$(date)"
+    logger -p9 -t "pppoe_check[${$}]" "$msg"
+    return 0
+}
+
+# check call from taskdaemon 
+if [ $# -eq 1 ] && [ $1 == 'trafficd' ]
+then
+    sleep 3
+fi
+
+#skip if boot is not done.
+bootcheck=$(cat /proc/xiaoqiang/boot_status)
+[ "$bootcheck" != "3" ] && exit 0
+
+#skip for AP mode
+mode=$(uci -q get xiaoqiang.common.NETMODE)
+[ "$mode" == "wifiapmode" -o "$mode" == "lanapmode" -o "$mode" == "whc_re" ] && exit 0
+
+# skip wan monitor in FT mode
+ft_mode=$(cat /proc/xiaoqiang/ft_mode)
+[ "$ft_mode" = "1" ] && exit 0
+
+# check link carrier
+. /lib/functions/network.sh
+
+# just check pppoe
+rt_mode=$(uci -q get network.wan.proto)
+[ "$rt_mode" != "pppoe" ] && exit 0
+
+if ! ifconfig pppoe-wan; then
+    log "ERROR: pppoe-wan interface is NULL, trigger PPPOE-wan to re-UP."
+    ifup wan
+else
+    network_is_up wan || exit 0
+    if ! pidof pppd; then
+        log "ERROR: pppd is not up, trigger PPPOE-wan to re-UP."
+        ifup wan
+    else
+        wan_port=$(uci -q get misc.sw_reg.sw_wan_port)
+        [ $wan_port = $PORT_NUM -a $LINK_STATUS = "linkdown" ] && {
+           . /lib/xq-misc/phy_switch.sh
+           if ! sw_wan_link_detect; then
+                log "ERROR: pppoe-wan interface is UP, pppd is UP, but port wan is unplugged."
+                ifup wan
+            fi
+        }
+    fi
+fi
+
+exit 0

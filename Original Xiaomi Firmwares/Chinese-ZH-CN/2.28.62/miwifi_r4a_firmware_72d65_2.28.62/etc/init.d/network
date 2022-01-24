@@ -1,0 +1,143 @@
+#!/bin/sh /etc/rc.common
+
+START=20
+STOP=90
+
+#SERVICE_DAEMONIZE=1
+#SERVICE_WRITE_PID=1
+
+CMD="/sbin/netifd"
+CMD_WAN_CHECK="/usr/sbin/check_wan_status.lua"
+
+fix_apmode_network_config() {
+    ap_mode=$(uci -q get xiaoqiang.common.NETMODE)
+    [ "$ap_mode" != "lanapmode" ] && return 0
+
+    config_load misc
+    config_get cmd_ifname_2G wireless ifname_2G &>/dev/null
+    config_get cmd_ifname_5G wireless ifname_5G &>/dev/null
+
+    lan_device=$(uci -q get backup.lan.ifname)
+    [ "$lan_device" == "" ] && lan_device="eth0"
+
+    ap_mode_act=$(uci -q get misc.switchop.bridgeap_open)
+    [ "$ap_mode_act" == "bridgeap_open_r1cm_elink" ] && {
+        uci -q set network.lan.ifname="$lan_device $cmd_ifname_2G $cmd_ifname_5G"
+        uci commit network
+    }
+}
+
+bridgeap_check_gw_start() {
+    ap_mode=$(uci -q get xiaoqiang.common.NETMODE)
+    [ "$ap_mode" != "lanapmode" ] && return 0
+    grep -v "/usr/sbin/ap_mode.sh check_gw" /etc/crontabs/root >/etc/crontabs/root.new
+    echo "*/1 * * * * /usr/sbin/ap_mode.sh check_gw" >>/etc/crontabs/root.new
+    mv /etc/crontabs/root.new /etc/crontabs/root
+    /etc/init.d/cron restart
+}
+
+add_openvpn_interface() {
+    local openvpn_network=$(uci -q get network.openvpn)
+    [ "openvpn_network" != "interface" ] && {
+        uci -q batch <<EOF
+        set network.openvpn=interface
+        set network.openvpn.ifname=tun0
+        set network.openvpn.proto=openvpn
+        commit network
+EOF
+
+    }
+}
+
+# longloopd must be shutdown prior to interface change
+stop_longloop() {
+    [ -x /usr/bin/longloopd ] && /usr/bin/longloopd stop
+}
+
+start() {
+    stop
+
+    [ -f "$CMD_WAN_CHECK" ] && {
+        export PROCLINE="$CMD_WAN_CHECK"
+        export PROCFLAG="/usr/bin/lua $CMD_WAN_CHECK"
+        /usr/sbin/supervisord start
+        export PROCLINE=""
+        export PROCFLAG=""
+    }
+
+    add_openvpn_interface
+    bridgeap_check_gw_start
+    # ensure netifd alive during OOM
+    echo '-1000' >/proc/$$/oom_score_adj
+    export PROCLINE="$CMD"
+    export PROCFLAG="$CMD"
+    /usr/sbin/supervisord start
+    export PROCLINE=""
+    export PROCFLAG=""
+
+
+    # wait for netifd start up
+    ubus -t 30 wait_for network.interface
+    setup_switch() { return 0; }
+
+    include /lib/network
+
+    {
+        /sbin/wifi down >/dev/null 2>&1
+        /sbin/wifi up
+    }
+
+    logger -t network -p9 "try to setup_switch and restart interfaces."
+    setup_switch
+
+    #for mt7621, seperate 16Queues into 2GMAC-scheduler to enable 1G+1G rate in HWNAT
+    [ -f /usr/bin/qdma ] && {
+        for i in $(seq 14 1 15); do
+            qdma sch $i 1
+        done
+    } || :
+
+    return 0 # always return ok
+
+}
+
+restart() {
+    stop_longloop
+
+    ifdown -a
+    sleep 1
+    start
+}
+
+shutdown() {
+    stop_longloop
+    ifdown wan
+    # sleep to let PPPoE clean up its sesssion.
+    for i in $(seq 1 10); do
+        pidof pppd >/dev/null || break
+        sleep 1
+    done
+    wifi down
+    ifdown -a
+    stop
+}
+
+stop() {
+    # remove openvpn
+    uci -q delete network.openvpn
+    uci commit network
+
+    fix_apmode_network_config
+    stop_longloop
+    export PROCLINE="$CMD"
+    export PROCFLAG="$CMD"
+    /usr/sbin/supervisord stop
+    export PROCLINE=""
+    export PROCFLAG=""
+}
+
+reload() {
+    ubus call network reload
+    /sbin/wifi down
+    /sbin/wifi up
+}

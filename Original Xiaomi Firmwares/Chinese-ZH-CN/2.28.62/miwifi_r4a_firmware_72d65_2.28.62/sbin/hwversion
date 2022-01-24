@@ -1,0 +1,7 @@
+#!/bin/sh
+
+id0=$(gpio 4 | cut -b 11)
+id1=$(gpio 3 | cut -b 11)
+id=$((id1<<1|id0<<0))
+
+echo -e "Ver. \x$(printf "%x" $((65+id)))"

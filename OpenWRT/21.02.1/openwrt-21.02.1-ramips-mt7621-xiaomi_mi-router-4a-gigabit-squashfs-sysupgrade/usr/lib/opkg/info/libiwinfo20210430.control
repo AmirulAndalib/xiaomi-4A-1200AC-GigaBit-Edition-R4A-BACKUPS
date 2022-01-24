@@ -1,0 +1,15 @@
+Package: libiwinfo20210430
+Version: 2021-04-30-c45f0b58-2.1
+Depends: libc, libnl-tiny1, libuci20130104, libubus20210630, libiwinfo-data
+Provides: libiwinfo
+Source: package/network/utils/iwinfo
+SourceName: libiwinfo
+License: GPL-2.0
+Section: libs
+SourceDateEpoch: 1626020209
+ABIVersion: 20210430
+Maintainer: Jo-Philipp Wich <jo@mein.io>
+Architecture: mipsel_24kc
+Installed-Size: 24584
+Description:  Wireless information library with simplified API for nl80211
+ and wext driver interfaces.

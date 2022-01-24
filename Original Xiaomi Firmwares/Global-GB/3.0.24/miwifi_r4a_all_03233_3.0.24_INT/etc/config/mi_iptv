@@ -1,0 +1,3 @@
+config iptv settings
+	option internet_tag "0"
+	option internet_vid "0"

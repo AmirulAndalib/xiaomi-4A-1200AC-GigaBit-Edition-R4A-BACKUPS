@@ -1,0 +1,12 @@
+Package: rpcd-mod-file
+Version: 2021-03-11-ccb75178-1
+Depends: libc, libubus20210630, libubox20210516, rpcd
+Source: package/system/rpcd
+SourceName: rpcd-mod-file
+License: ISC
+Section: utils
+SourceDateEpoch: 1615845196
+Maintainer: Jo-Philipp Wich <jo@mein.io>
+Architecture: mipsel_24kc
+Installed-Size: 6616
+Description:  Provides ubus calls for file and directory operations.

@@ -1,0 +1,37 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2009-2012 OpenWrt.org
+
+START=12
+STOP=99
+
+start() {
+	ulimit -c unlimited
+	echo -1000 > /proc/$$/oom_score_adj
+	#monitor /tmp : if modify time exceed 15min and limit size exceed 5M, then clear it.
+	/usr/sbin/taskmonitorServer -t 15 -l 0x500000
+	/usr/sbin/taskmonitorDaemon -p "/usr/sbin/taskmonitorServer" -b "/usr/sbin/taskmonitorServer"
+	return 0
+}
+
+restart() {
+	stop
+	sleep 1
+	start
+	return $?
+}
+
+shutdown() {
+	stop
+	return $?
+}
+
+stop() {
+	killall taskmonitorDaemon
+	killall taskmonitorServer
+	return $?
+}
+status() {
+	echo "status"
+	return $?
+}
+#

@@ -1,0 +1,15 @@
+Package: px5g-wolfssl
+Version: 3
+Depends: libc, libwolfssl4.8.1.66253b90
+Provides: px5g
+Source: package/utils/px5g-wolfssl
+SourceName: px5g-wolfssl
+License: GPL-2.0-or-later
+Section: utils
+SourceDateEpoch: 1611716393
+Maintainer: Paul Spooren <mail@aparcar.org>
+Architecture: mipsel_24kc
+Installed-Size: 4404
+Description:  Px5g is a tiny X.509 certificate generator.
+ It suitable to create key files and certificates in DER
+ and PEM format for use with stunnel, uhttpd and others.

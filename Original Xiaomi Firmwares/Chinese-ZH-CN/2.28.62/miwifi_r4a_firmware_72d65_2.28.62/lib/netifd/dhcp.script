@@ -1,0 +1,219 @@
+#!/bin/sh
+[ -z "$1" ] && echo "Error: should be run by udhcpc" && exit 1
+
+#Command failed: Not found is case by ubus call network.interface notify_proto, when manual run udhcpc
+
+. /lib/functions.sh
+. /lib/netifd/netifd-proto.sh
+
+export PATH="/sbin:/bin:/usr/sbin:/usr/bin:$PATH"
+
+set_classless_routes() {
+	local max=128
+	local type
+	while [ -n "$1" -a -n "$2" -a $max -gt 0 ]; do
+		proto_add_ipv4_route "${1%%/*}" "${1##*/}" "$2"
+		max=$(($max-1))
+		shift 2
+	done
+}
+
+setup_interface () {
+	proto_init_update "*" 1
+	proto_add_ipv4_address "$ip" "${subnet:-255.255.255.0}"
+	# TODO: apply $broadcast
+
+	for i in $router; do
+		proto_add_ipv4_route 0.0.0.0 0 "$i"
+	done
+
+
+	# CIDR STATIC ROUTES (rfc3442)
+	[ -n "$staticroutes" ] && set_classless_routes $staticroutes
+	[ -n "$msstaticroutes" ] && set_classless_routes $msstaticroutes
+
+        if [ "$INTERFACE" != "iptv" ]
+        then
+		peerdns=$(uci -q get network.wan.peerdns)
+		smartdns=$(uci -q get misc.smartdns.dns)
+		for onedns in $dns; do
+			proto_add_dns_server "$onedns"
+		done
+
+		for sdns in $smartdns; do
+			[ "${dns/$sdns/}" == "${dns}" -a x$peerdns == x ] && proto_add_dns_server "$sdns"
+		done
+
+		for domain in $domain; do
+			proto_add_dns_search "$domain"
+		done
+	fi
+	proto_send_update "$INTERFACE"
+
+	#iptv should delete default route through dev eth0.3
+	[ "$INTERFACE" == "iptv" -a -f "/usr/sbin/iptv.sh" ] && /usr/sbin/iptv.sh ifup
+
+	if [ -n "$IFACE6RD" -a -n "$ip6rd" ]; then
+		local v4mask="${ip6rd%% *}"
+		ip6rd="${ip6rd#* }"
+		local ip6rdprefixlen="${ip6rd%% *}"
+		ip6rd="${ip6rd#* }"
+		local ip6rdprefix="${ip6rd%% *}"
+		ip6rd="${ip6rd#* }"
+		local ip6rdbr="${ip6rd%% *}"
+
+uci -q batch <<-EOF >/dev/null
+set network.$IFACE6RD.proto=6rd
+set network.$IFACE6RD.auto=0
+set network.$IFACE6RD.peeraddr=$ip6rdbr
+set network.$IFACE6RD.ip4prefixlen=$v4mask
+set network.$IFACE6RD.ip6prefix=$ip6rdprefix
+set network.$IFACE6RD.ip6prefixlen=$ip6rdprefixlen
+commit network
+EOF
+
+		ifdown "$IFACE6RD"
+		/etc/init.d/network reload
+		ifup "$IFACE6RD"
+	fi
+
+    [ -n "$mtu" ] && ip link set dev "$interface" mtu $mtu 2>/dev/null && logger "set $interface mtu to $mtu"
+	# TODO
+	# [ -n "$ntpsrv" ] && 	change_state network "$ifc" lease_ntpsrv "$ntpsrv"
+	# [ -n "$timesvr" ] && 	change_state network "$ifc" lease_timesrv "$timesvr"
+	# [ -n "$hostname" ] &&	change_state network "$ifc" lease_hostname "$hostname"
+    # [ -n "$timezone" ] && 	change_state network "$ifc" lease_timezone "$timezone"
+}
+
+deconfig_interface() {
+	proto_init_update "*" 0
+	proto_send_update "$INTERFACE"
+}
+
+# old ap mode set in dhcp_apclient.sh
+setup_for_mesh_re () {
+    # reset lan config
+    [ -z "$ip" ] && exit 1
+    netmask="${subnet:-255.255.255.0}"
+    mtu="${mtu:-1500}"
+    dns="${dns:-$router}"
+
+    model=$(uci -q get misc.hardware.model)
+    [ -z "$model" ] && model=$(cat /proc/xiaoqiang/model)
+    hostname="MiWiFi-$model"
+
+    logger -p warn -t udhcpc " ============ mesh re set ip=$ip gw=$router."
+
+uci -q batch <<EOF >/dev/null
+set xiaoqiang.common.ap_hostname=$hostname
+#set xiaoqiang.common.vendorinfo=$vendorinfo
+commit xiaoqiang
+set network.lan=interface
+set network.lan.type=bridge
+set network.lan.proto=static
+set network.lan.ipaddr=$ip
+set network.lan.netmask=$netmask
+set network.lan.gateway=$router
+set network.lan.mtu=$mtu
+del network.lan.dns
+del network.vpn
+EOF
+
+    for d in $dns
+    do
+	uci -q add_list network.lan.dns=$d
+    done
+    uci commit network
+
+    # restart service
+    ifdown vpn
+    #bridgeap_open;
+    #/etc/init.d/network restart
+    #/usr/sbin/dhcp_apclient.sh restart
+    /usr/sbin/vasinfo_fw.sh off
+    /etc/init.d/trafficd restart
+    /etc/init.d/xqbc restart
+    [ -f /etc/init.d/hwnat ] && /etc/init.d/hwnat off
+
+    #bridgeap_check_gw_start
+
+    #bridgeap_plugin_restart
+    [ -f /etc/init.d/minet ] && /etc/init.d/minet restart
+
+    # call netifd reload, and it will stop udhcpc. And must avoid conflict with wifi OPS.
+    if [ "`uci -q get xiaoqiang.common.INITTED`" != "YES" ]; then
+        ubus call network reload
+        logger -p warn -t udhcpc "====== ubus call network reload, make netifd kill udhcpc immediately !"
+    else
+        /etc/init.d/network restart
+        logger -p warn -t udhcpc "====== call /etc/init.d/network reload after dhcp, make lan to static."
+    fi
+}
+
+case "$1" in
+        deconfig)
+	        logger -p warn -t udhcpc "start on $INTERFACE"
+		deconfig_interface
+	;;
+	renew|bound)
+	        logger -p warn -t udhcpc "$1 $INTERFACE $interface $ip/$router dns:$dns ttl: $lease"
+		setup_interface
+		# do other config for mesh RE device [master:whc_cap  child:whc_re]
+		local mesh_mode=`uci get xiaoqiang.common.NETMODE -q`
+		if [ "$mesh_mode" == "whc_re" ]; then
+			setup_for_mesh_re
+		fi
+        ;;
+	nak)
+	        logger -p warn -t udhcpc "$1 $INTERFACE $message"
+	;;
+	leasefail)
+	        logger -p warn -t udhcpc "$1 $INTERFACE"
+	;;
+        offer_exit)
+                echo vendorinfo=$vendorinfo
+                vendorinfo_tmp=${vendorinfo:0:8}
+                echo vendorinfo_tmp=$vendorinfo_tmp
+                if [ "$vendorinfo_tmp" != "opt_ret=" ];then
+                        echo "100" > /tmp/dhcp_opt43_act_tmp
+                else
+                        echo ${vendorinfo##*=} > /tmp/dhcp_opt43_act_tmp
+                fi
+
+esac
+
+#config wan dhcp vendor info
+uci set xiaoqiang.common.vendorinfo=$vendorinfo
+uci commit xiaoqiang
+
+#export VAR for dhcp.check
+NETWORKENVFILE='/tmp/network.env'
+
+cat <<EOF>$NETWORKENVFILE
+NETWORKACTION=$1;
+LOGDEV=$INTERFACE;
+PHYDEV=$interface;
+ROUTER=$router;
+LOCALGW=$router;
+SUBNET=$subnet;
+ISPDNS=$dns;
+ISPSERVERID=$serverid;
+IPADDR=$ip;
+ISPDOMAIN=$domain;
+IPMASKBIT=$mask;
+IPLEASE=$lease;
+MTU=$mtu;
+EOF
+if [ $? -ne 0 ]
+	then
+	echo "WARNING: NETWORKENVFILE $NETWORKENVFILE update failed."
+fi
+
+#
+[ -f /lib/netifd/dhcp.check ] && /lib/netifd/dhcp.check start
+#
+
+# user rules
+[ -f /etc/udhcpc.user ] && . /etc/udhcpc.user
+
+exit $exitcode

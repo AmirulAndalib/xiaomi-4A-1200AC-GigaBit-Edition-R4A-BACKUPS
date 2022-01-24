@@ -1,0 +1,13 @@
+Package: uhttpd-mod-ubus
+Version: 2021-03-21-15346de8-2
+Depends: libc, uhttpd, libubus20210630, libblobmsg-json20210516
+Source: package/network/services/uhttpd
+SourceName: uhttpd-mod-ubus
+License: ISC
+Section: net
+SourceDateEpoch: 1633588463
+Maintainer: Felix Fietkau <nbd@nbd.name>
+Architecture: mipsel_24kc
+Installed-Size: 7744
+Description:  The ubus plugin adds a HTTP/JSON RPC proxy for ubus and publishes the
+ session.* namespace and procedures.

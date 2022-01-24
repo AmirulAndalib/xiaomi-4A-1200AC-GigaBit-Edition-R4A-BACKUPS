@@ -1,0 +1,150 @@
+#!/bin/sh
+[ -z "$2" ] && echo "Error: should be run by odhcpc6c" && exit 1
+. /lib/functions.sh
+. /lib/netifd/netifd-proto.sh
+
+conlog() {
+    msg="$@"
+    [ -z "$msg" ] && return 0
+
+    DATE="$(date)"
+    logger -t "dhcpv6.script[${$}]" "$msg"
+    return 0
+}
+
+# conlog ":::::::::::::::::::::$@"
+
+setup_interface() {
+    #ipv6 switcher for internal-use, close if is 0.
+    ipv6_show=$(uci get -q ipv6.settings.ipv6_show)
+    [ "$ipv6_show" = "0" ] && return 0
+
+    #here check if IPV6 feature is ON or OFF
+    ipv6flag=$(uci get -q ipv6.settings.enabled)
+    ipv6mode=$(uci get -q ipv6.settings.mode)
+    [ "$ipv6flag" != "1" -o -z "$ipv6mode" ] && return 0
+
+    # conlog "========setup_interface. $@"
+
+    local device="$1"
+    proto_init_update "*" 1
+
+    linklocal_ipv6addrs=$(ifconfig | grep fe80 | awk '{print $3}')
+    # Merge RA-DNS
+    for radns in $RA_DNS; do
+        local duplicate=0
+        for dns in $RDNSS; do
+            [ "$radns" = "$dns" ] && duplicate=1
+        done
+        [ "$duplicate" = 0 ] && [[ "${linklocal_ipv6addrs/$radns/}" == "${linklocal_ipv6addrs}" ]] && RDNSS="$RDNSS $radns"
+    done
+
+    for dns in $RDNSS; do
+        proto_add_dns_server "$dns"
+    done
+
+    for domain in $DOMAINS; do
+        proto_add_dns_search "$domain"
+    done
+
+    mode=$(uci -q get ipv6.settings.mode)
+    if [ "$mode" = "native" ]; then
+    [ -n "$USERPREFIX" ] && proto_add_ipv6_prefix "$USERPREFIX"
+    fi
+
+    # Merge addresses
+    for entry in $RA_ADDRESSES; do
+        local duplicate=0
+        local addr="${entry%%/*}"
+        for dentry in $ADDRESSES; do
+            local daddr="${dentry%%/*}"
+            [ "$addr" = "$daddr" ] && duplicate=1
+        done
+        [ "$duplicate" = "0" ] && ADDRESSES="$ADDRESSES $entry"
+    done
+
+    for entry in $ADDRESSES; do
+        local addr="${entry%%/*}"
+        entry="${entry#*/}"
+        local mask="${entry%%,*}"
+        entry="${entry#*,}"
+        local preferred="${entry%%,*}"
+        entry="${entry#*,}"
+        local valid="${entry%%,*}"
+
+        proto_add_ipv6_address "$addr" "$mask" "$preferred" "$valid" 1
+    done
+
+    #for radvd, if not given prefix, just use address as prefix/64
+    #[ x$PREFIXES == "x" ] && PREFIXES=$ADDRESSES
+
+    if [ "$mode" = "native" ]; then
+    for prefix in $PREFIXES; do
+        proto_add_ipv6_prefix "$prefix"
+    done
+    fi
+
+    for entry in $RA_ROUTES; do
+        local addr="${entry%%/*}"
+        entry="${entry#*/}"
+        local mask="${entry%%,*}"
+        entry="${entry#*,}"
+        local gw="${entry%%,*}"
+        entry="${entry#*,}"
+        local valid="${entry%%,*}"
+        entry="${entry#*,}"
+        local metric="${entry%%,*}"
+
+        if [ -z "$gw" -o "$duplicate" = 1 ]; then
+            proto_add_ipv6_route "$addr" "$mask" "$gw" "$metric" "$valid"
+        else
+            for prefix in $PREFIXES $ADDRESSES; do
+                local paddr="${prefix%%,*}"
+                proto_add_ipv6_route "$addr" "$mask" "$gw" "$metric" "$valid" "$paddr"
+            done
+            if [ -n "$gw" -a "$addr" = "::" -a "$mask" = "0" ]; then
+                # conlog ":::::set default gw to $gw "
+                [[ "${linklocal_ipv6addrs/$gw/}" == "${linklocal_ipv6addrs}" ]] && proto_add_ipv6_route "$addr" "$mask" "$gw" "1" "$valid"
+            fi
+        fi
+    done
+
+    proto_send_update "$INTERFACE"
+
+    # conlog "========setup_interface. end"
+}
+
+teardown_interface() {
+    # conlog "========teardown_interface. $@"
+    device="$1"
+    proto_init_update "*" 0
+    proto_send_update "$INTERFACE"
+
+    #ip -6 route flush dev "$device"
+    #ip -6 address flush dev "$device" scope global
+    # conlog "========teardown_interface. end"
+}
+
+case "$2" in
+bound)
+    teardown_interface "$1"
+    setup_interface "$1"
+    ipv6flag=$(uci get -q ipv6.settings.enabled)
+    mode=$(uci -q get ipv6.settings.mode)
+    logger -p info -t ipv6 "stat_points_none dhcpv6_info=$ipv6flag|$mode|${RA_ADDRESSES%%,*}|${PREFIXES%%,*}"
+    ;;
+informed | updated | rebound)
+    setup_interface "$1"
+    ;;
+ra-updated)
+    [ -n "$ADDRESSES$RA_ADDRESSES$PREFIXES$USERPREFIX" ] && setup_interface "$1"
+    ;;
+started | stopped | unbound)
+    teardown_interface "$1"
+    ;;
+esac
+
+# user rules
+[ -f /etc/odhcp6c.user ] && . /etc/odhcp6c.user "$@"
+
+exit 0

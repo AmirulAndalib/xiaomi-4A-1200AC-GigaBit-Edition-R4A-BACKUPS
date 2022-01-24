@@ -1,0 +1,250 @@
+#!/bin/sh
+# example:
+# enable_ipv6 wan off
+# enable_ipv6 wan native
+# enable_ipv6 wan static ip6addr ip6gw ip6prefix ip6assign
+# enable_ipv6 wan nat
+# enable_ipv6 wan nat ip6addr ip6gw
+
+usage() {
+    echo "usage:
+ enable_ipv6 wan off
+ enable_ipv6 wan native
+ enable_ipv6 wan static ip6addr ip6gw ip6prefix ip6assign
+ enable_ipv6 wan nat
+ enable_ipv6 wan nat ip6addr ip6gw
+ enable_ipv6 wan dns off
+ enable_ipv6 wan dns on dns-list
+"
+
+}
+
+loginfo() {
+    msg="$@"
+    [ -z "$msg" ] && return 0
+
+    DATE="$(date)"
+    logger -t "enable_ipv6[${$}]" "$msg"
+    return 0
+}
+
+logerr() {
+    msg="$@"
+    [ -z "$msg" ] && return 0
+
+    DATE="$(date)"
+    logger -p9 -t "enable_ipv6[${$}]" "$msg"
+    return 0
+}
+
+iface=$1
+action=$2
+ip6addr=$3
+ip6gw=$4
+ip6prefix=$5
+ip6assign=$6
+
+case ${action} in
+"off")
+    [ -z "$iface" ] && {
+        logerr "ERROR: iface canot be NULL. exit."
+        exit 0
+    }
+
+    loginfo "INFO: try to off router [IPv6-mode]."
+    ## clean wan and clean lan
+    uci -q batch <<EOF
+		delete network.${iface}6
+		del_list network.lan.ip6class=${iface}6
+        delete network.lan.ip6addr
+		delete network.lan.ip6assign
+		commit network
+EOF
+    ;;
+"native")
+
+    [ -z "$iface" ] && {
+        logerr "ERROR: iface canot be NULL. exit."
+        exit 0
+    }
+
+    [ -z "$ip6assign" ] && {
+        logerr "WARN: [Native6-mode] ip6assign is NULL, set 64 as default."
+        ip6assign="64"
+    }
+
+    loginfo "INFO: try to set router to [Native6-mode]."
+    ## set wan to dhcpv6 and set lan to static prefix set
+    uci -q batch <<EOF
+		delete network.${iface}6
+		set network.${iface}6=interface
+		set network.${iface}6.ifname=@${iface}
+		set network.${iface}6.proto=dhcpv6
+		# set network.${iface}6.reqaddress=force
+		# set network.${iface}6.reqprefix=auto
+		del_list network.lan.ip6class=${iface}6
+		add_list network.lan.ip6class=${iface}6
+        delete network.lan.ip6addr
+		set network.lan.ip6assign=${ip6assign}
+		commit network
+EOF
+    ;;
+"static")
+    [ -z "$iface" ] && {
+        logerr "ERROR: iface canot be NULL. exit."
+        exit 0
+    }
+
+    ## set wan to static and set lan to static prefix set.
+    [ -z "$ip6addr" ] && {
+        logerr "ERROR: [Static6-mode] ip6addr is NULL. exit."
+        return 0
+    }
+
+    [ -z "$ip6gw" ] && {
+        logerr "ERROR: [Static6-mode] ip6gw is NULL. exit."
+        return 0
+    }
+
+    [ -z "$ip6prefix" ] && {
+        logerr "ERROR: [Static6-mode] ip6prefix is NULL. exit."
+        return 0
+    }
+
+    [ -z "$ip6assign" ] && {
+        logerr "WARN: [Static6-mode] ip6assign is NULL, set 64 as default."
+        ip6assign="64"
+    }
+
+    loginfo "INFO: try to set router to [Static6-mode]."
+
+    uci -q batch <<EOF
+		delete network.${iface}6
+		set network.${iface}6=interface
+		set network.${iface}6.ifname=@${iface}
+		set network.${iface}6.proto=static
+		set network.${iface}6.ip6assign=no
+		set network.${iface}6.ip6addr=${ip6addr}
+		set network.${iface}6.ip6prefix=${ip6prefix}
+		set network.${iface}6.ip6gw=${ip6gw}
+        delete network.lan.ip6addr
+		del_list network.lan.ip6class=${iface}6
+		add_list network.lan.ip6class=${iface}6
+		set network.lan.ip6assign=${ip6assign}
+		commit network
+EOF
+
+    ;;
+
+"nat")
+    ## TODO: NOT support yet
+    [ -z "$iface" ] && {
+        logerr "ERROR: iface canot be NULL. exit."
+        exit 0
+    }
+    ## set WAN to dhcpv6 and set lan to static assuming ULA
+
+    [ -z "$ip6assign" ] && {
+        logerr "WARN: [NAT6-mode] ip6assign is NULL, set 64 as default."
+        ip6assign="64"
+    }
+
+    loginfo "INFO: try to set router to [NAT6-mode]."
+
+    if [ -z "$ip6addr" -o -z "$ip6gw" ]; then
+        loginfo "INFO: [NAT6-mode] ip6addr and  ip6gw is NULL. Set WAN to DHCP6 proto and LAN to NAT static-ULA."
+        uci -q batch <<EOF
+		delete network.globals
+        set network.lan.ip6addr=fd00:6868:6868::1/${ip6assign}
+		delete network.${iface}6
+		set network.${iface}6=interface
+		set network.${iface}6.ifname=@${iface}
+		set network.${iface}6.proto=dhcpv6
+		commit network
+
+EOF
+    else
+        loginfo "INFO: [NAT6-mode] ip6addr and  ip6gw is Set. Set WAN to Static-IP6 addr and LAN to NAT static-ULA."
+        uci -q batch <<EOF
+		delete network.globals
+		set network.lan.ip6addr=fd00:6868:6868::1/${ip6assign}
+		delete network.${iface}6
+		set network.${iface}6=interface
+		set network.${iface}6.ifname=@${iface}
+		set network.${iface}6.proto=static
+		set network.${iface}6.ip6assign=no
+		set network.${iface}6.ip6addr=${ip6addr}
+		set network.${iface}6.ip6gw=${ip6gw}
+		commit network
+EOF
+    fi
+
+    ;;
+"dns")
+    #update DNS for iface6
+    [ -z "$iface" ] && {
+        logerr "ERROR: iface canot be NULL. exit."
+        exit 0
+    }
+
+    loginfo "INFO: update DNS config."
+
+    dnslist=$3
+    peerdns="1"
+    [ -n "$dnslist" ] && peerdns="0"
+
+    if [ "$peerdns" == "1" ]; then
+        uci -q batch <<EOF
+        delete network.${iface}6.dns
+        delete network.${iface}6.peerdns
+        commit network
+EOF
+
+    else
+        #close "peer dns" to use customized DNS
+        uci -q set network.${iface}6.peerdns="0"
+        #split dns server list
+        var=${dnslist//,/ }
+        for elem in $var; do
+            uci -q add_list network.${iface}6.dns="$elem"
+        done
+        uci commit network
+    fi
+
+    ;;
+
+"reload_network")
+    [ -z "$iface" ] && {
+        logerr "ERROR: iface canot be NULL. exit."
+        exit 0
+    }
+
+    ubus call network reload
+    #restart ipv6 interface
+    ip6iface=$(uci -q get network.${iface}6.ifname)
+    if [ -n "$ip6iface" ]; then
+        ifup ${iface}6 >/dev/null 2>&1
+    else
+        ifdown ${iface}6 >/dev/null 2>&1
+    fi
+
+    #flush all deprecated address
+    ip -6 address flush scope global deprecated dynamic
+
+    ip6_enabled=$(uci -q get ipv6.settings.enabled)
+    mode=$(uci -q get ipv6.settings.mode)
+    logger stat_points_none ip6_enabled=$ip6_status,$mode
+
+    #restart firewall
+    /etc/init.d/firewall reload
+    /etc/init.d/dnsmasq restart
+    ;;
+
+*)
+    usage
+    exit 0
+
+    ;;
+esac
+
+return 0

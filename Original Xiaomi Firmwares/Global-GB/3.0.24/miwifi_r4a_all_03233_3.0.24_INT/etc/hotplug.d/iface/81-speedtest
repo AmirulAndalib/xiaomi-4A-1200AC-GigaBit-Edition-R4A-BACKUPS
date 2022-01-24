@@ -1,0 +1,4 @@
+#!/bin/sh
+[ "$ACTION" == "ifup" ] && [ "$INTERFACE" == "wan" ] && {
+    /usr/sbin/auto_speedtestd oversea
+}

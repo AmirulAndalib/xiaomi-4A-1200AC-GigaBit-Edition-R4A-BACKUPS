@@ -1,0 +1,296 @@
+#!/usr/bin/lua
+
+local io = require "io"
+local socket = require "socket"
+local px = require "Posix"
+local devs = {"ifb0", "eth0.2"}
+local g_interval = 1
+local printf=print
+local t_now,t_last,t_interval=nil,nil,nil
+local batch_mode = false
+
+local DISP={
+    prefix='\027[',
+    def={
+        nothing='0m',
+        highlight='1m',
+        bottomline='4m',
+        flash='5m',
+        reverse='7m',
+        show='8m',
+        fg={
+            black='30m',
+            red='31m',
+            green='32m',
+            yellow='33m',
+            blue='34m',
+            purple='35m',
+            qin_se='36m',
+            white='37m',
+        },
+        bg={
+            black='40m',
+            red='41m',
+            green='42m',
+            yellow='43m',
+            blue='44m',
+            purple='45m',
+            qin_se='46m',
+            white='47m',
+        },
+        move_up='%dA',    -- %d should be filled with line number
+        move_down='%dB',
+        move_right='%dC',
+        move_left='%dD',
+        move_x_y='%d;%dH',    --- move to pos(x,y)
+        move_1_1='0;0H',        -- move to pos(1,1)
+        clear='2J', --clear screen
+        hide_cursor='25l',
+        show_cursor='25h',
+    },
+}
+
+--split string with chars '$p'
+string.split = function(s, p)
+    local rt= {}
+    string.gsub(s, '[^'..p..']+', function(w) table.insert(rt, w) end )
+    return rt
+end
+
+function conv(n)
+   n = n / 8
+   prefix = "KB"
+   if n > 1024 then
+        n = n/1024
+        prefix = 'MB'
+    end
+    n = string.format("%.1f%s",n,prefix)
+    return n
+end
+
+function display(p)
+    if batch_mode then
+        return '';
+    end
+    local v=string.split(p,'.')
+    if DISP.def[p] then
+        return DISP.prefix .. DISP.def[p];
+    elseif DISP.def[v[1]][v[2]] then
+        return DISP.prefix .. DISP.def['highlight'] .. DISP.prefix .. DISP.def[v[1]][v[2]];
+    else
+        return '';
+    end
+end
+
+local sep_line=display('nothing') .. "------------------------------------------------";
+local logger=print
+local qostype=nil
+local function print_r(root,ind)
+    local indent="    " .. ind
+    for k,v in pairs(root or {}) do
+            if(type(v) == "table") then
+                    logger(3,indent .. k .. " = {")
+                    print_r(v,indent)
+                    logger(3, indent .. "}")
+            elseif(type(v) == "boolean") then
+                local tmp = 'false'
+                if v then tmp = 'true' end
+                logger(3, indent .. k .. '=' .. tmp)
+            else
+                logger(3, indent .. k .. "=" .. v)
+            end
+    end
+end
+
+function update_clock()
+    t_last=t_now
+    t_now=socket.gettime()
+    if t_now and t_last then
+        t_interval = t_now - t_last
+    end
+end
+
+function get_counters(devs)
+    local tbl = {}
+    local status = 'on'
+    update_clock()
+    local cmd_tbl = {}
+
+    local cmd = "cat /proc/mt7621/tx_ring\n"
+    local pp = io.popen(cmd)
+    local Q_no
+    local Q_inner = 0
+
+    for line in pp:lines() do
+        local tokens=string.split(line,':#;')
+        if tokens[1] == "SW TXD" then
+            tbl["txd"] = line
+        elseif tokens[1] == "SCH1 rate control" or tokens[1] == "SCH2 rate control" then
+            local no,open,rate = string.match(line, "^(%w+) rate control:(%d+). Rate is (%w+).")
+            if not tbl['sch'] then tbl['sch'] ={} end
+            tbl['sch'][no] = open .. "_" .. rate
+        elseif tokens[1] == "Queue" then
+            Q_no = string.match(line, "Queue#(%d+)")
+            Q_inner = 1
+            tbl[Q_no]={}
+        elseif Q_inner == 1 then
+            Q_inner = Q_inner + 1
+            cnt=string.match(line,"^(%d+) packets in the queue")
+            tbl[Q_no]["cnt"] = cnt
+            tbl[Q_no]["n"] = tonumber(Q_no)
+        elseif Q_inner == 2 then
+            Q_inner = Q_inner + 1
+            tbl[Q_no]["HW_RESV"] = tokens[2]
+            tbl[Q_no]["SW_RESV"] = tokens[4]
+            tbl[Q_no]["SCH"] = tokens[6]
+            tbl[Q_no]["weight"] = tokens[8]
+        elseif Q_inner == 3 then
+            Q_inner = 0
+            min_en,min_r,max_en,max_r=string.match(line,"Min_Rate_En is (%d+), Min_Rate is (%d+)Kbps; Max_Rate_En is (%d+), Max_Rate is (%d+)Kbps.")
+            tbl[Q_no]["min_en"] = min_en
+            tbl[Q_no]["min_rate"] = conv(min_r)
+            tbl[Q_no]["max_en"] = max_en
+            tbl[Q_no]["max_rate"] = conv(max_r)
+        end
+    end
+
+    pp:close()
+
+    return tbl
+end
+
+function get_hwqos_ip()
+    local cmd = "[ -f /proc/sys/net/hwqos/m2q_ip ] && cat /proc/sys/net/hwqos/m2q_ip"
+    local qlist={}
+    local pp=io.popen(cmd)
+    local data=pp:read("*l")
+    pp:close()
+    local pair=string.split(data or "","][)(")
+    for k,v in pairs(pair or {}) do
+        local data=string.split(v,":")
+        if data and data[1] and data[2] then
+            local ip,q=data[1],data[2]
+            if tonumber(ip) > 255 then
+                ip = "USR_D." .. math.ceil(tonumber(ip)-256)
+            else
+                ip = "USR_U." .. ip
+            end
+            qlist[q]=ip
+        end
+    end
+
+    return qlist
+end
+
+local header_table={'n','HW_RESV','SW_RESV','SCH','min_en','min_rate','max_en','max_rate','weight','cnt','descrip'}
+
+function print_ender()
+    printf(sep_line)
+end
+
+function sleep(n)
+    socket.select(nil, nil, n)
+end
+
+function get_num(nr)
+   local _,_,num,prefix = string.find(nr,"(%d+)(%S+)")
+   if prefix == "Kbit" then return num*1024/8
+   elseif prefix == "Mbit" then return num*1024*1024/8
+   else return num/8
+   end
+end
+
+function main()
+
+    local clear_count=0
+    local display_count=3
+    os.execute('clear')
+    while display_count > 0 do
+
+        res = get_counters(devs)
+        local qlist=get_hwqos_ip()
+
+        local key_table={}
+        for key, _ in pairs(res) do
+            table.insert(key_table, key)
+        end
+        table.sort(key_table, function (n1,n2)
+                                if not tonumber(n1) then
+                                    return true
+                                elseif not tonumber(n2) then
+                                    return false
+                                else
+                                    return tonumber(n1) < tonumber(n2)
+                                end
+                            end)
+
+        if clear_count > 3 then
+            clear_count = 0
+            os.execute('clear')
+        end
+        clear_count = clear_count +1
+        printf (display('move_1_1'))  -- move cursor to pos(1,1)
+        -- print_header()
+        local header=false
+
+        for _,v in pairs(key_table) do
+            if v == "txd" then
+                printf(res[v])
+            elseif v == "sch" then
+                for i,j in pairs(res[v]) do
+                    printf(i .. " " .. string.format("%8s",j))
+                end
+            else
+                local h_str=""
+                local tmp=""
+                if res[v]["SCH"] == " 2" then
+                    tmp = display('fg.yellow')
+                elseif res[v]["SCH"] == " 1" then
+                    tmp = display('fg.blue')
+                end
+
+                if res[v]["n"] == 0 then
+                    res[v]["descrip"] = "Lan"
+                elseif res[v]["n"] == 1 then
+                    res[v]["descrip"] = "Download"
+                elseif res[v]["n"] == 2 then
+                    res[v]["descrip"] = "Guest_D"
+                elseif res[v]["n"] == 11 then
+                    res[v]["descrip"] = "Video_D"
+                elseif res[v]["n"] == 12 then
+                    res[v]["descrip"] = "Web_D"
+                elseif res[v]["n"] == 13 then
+                    res[v]["descrip"] = "Game_D"
+                elseif res[v]["n"] == 14 then
+                    res[v]["descrip"] = "Guest_UP"
+                elseif res[v]["n"] == 15 then
+                    res[v]["descrip"] = "Host_UP"
+                else
+                    if qlist[tostring(res[v]['n'])] then
+                        res[v]["descrip"] = qlist[tostring(res[v]['n'])]
+                    else
+                        res[v]["descrip"] = "USR"
+                    end
+                end
+
+                for _,j in pairs(header_table) do
+                    h_str = h_str .. string.format("%8s",j) .. ' '
+                    tmp = tmp .. string.format("%8s",res[v][j]) .. ' '
+                end
+                if not header then
+                    printf(string.format(h_str))
+                    header = true
+                end
+                printf(tmp)
+            end
+        end
+
+        print_ender()
+        sleep(g_interval)
+    end
+end
+
+px.signal(px.SIGTERM, function () os.exit(0) end)
+px.signal(px.SIGINT, function () os.exit(0) end)
+
+main()

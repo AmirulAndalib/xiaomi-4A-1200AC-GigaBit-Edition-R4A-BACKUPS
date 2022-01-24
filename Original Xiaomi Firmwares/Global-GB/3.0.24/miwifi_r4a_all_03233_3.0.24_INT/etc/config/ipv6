@@ -1,0 +1,9 @@
+config ipv6 settings
+    option enabled "0"
+    option mode "off"
+
+config dns dns
+    option peerdns "1"
+
+
+

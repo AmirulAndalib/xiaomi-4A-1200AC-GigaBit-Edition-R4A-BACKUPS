@@ -1,0 +1,35 @@
+#!/bin/sh /etc/rc.common
+
+#START=19
+
+CMD="/usr/sbin/mi_iptv.sh"
+
+start() {
+	local mode=$(uci -q get xiaoqiang.common.NETMODE)
+	if [ "$mode" = "lanapmode" -o "$mode" = "wifiapmode" -o "$mode" = "whc_re" ]; then
+		return 0
+	fi
+	
+	$CMD on
+	
+    return 0
+}
+
+stop(){
+	local mode=$(uci -q get xiaoqiang.common.NETMODE)
+	if [ "$mode" = "lanapmode" -o "$mode" = "wifiapmode" -o "$mode" = "whc_re" ]; then
+		return 0
+	fi
+	
+	$CMD off
+	return 0
+}
+
+restart(){
+	local mode=$(uci -q get xiaoqiang.common.NETMODE)
+	if [ "$mode" = "lanapmode" -o "$mode" = "wifiapmode" -o "$mode" = "whc_re" ]; then
+		return 0
+	fi
+	
+	$CMD restart
+}

@@ -1,0 +1,11 @@
+Package: kmod-leds-gpio
+Version: 5.4.154-1
+Depends: kernel (=5.4.154-1-ecc7515846d9a85938da6124aee98749)
+Source: package/kernel/linux
+SourceName: kmod-leds-gpio
+License: GPL-2.0
+Section: kernel
+SourceDateEpoch: 1625225471
+Architecture: mipsel_24kc
+Installed-Size: 2830
+Description:  Kernel module for LEDs on GPIO lines
